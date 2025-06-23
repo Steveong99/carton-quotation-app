@@ -1,218 +1,199 @@
 import streamlit as st
 import math
-from dataclasses import dataclass
-from enum import Enum
-from typing import Tuple
 
-# ==================== CONSTANTS & ENUMS ====================
-class CalculationType(Enum):
-    CARTON_BOX = "Carton Box"
-    PIZZA_BOX = "Pizza Box"
-    LAYER_PAD = "Layer Pad"
-    NESTING_DESIGN = "Nesting Design"
-    SAMPLE_BOARD = "Sample Board"
-    NESTING_LAYER_PAD = "Nesting & Layer Pad"
+# ==================== CONSTANTS ====================
+TRIM_ALLOWANCE = 28
+MAX_ROLL_WIDTH = 2200
 
-DEFAULT_TRIM_ALLOWANCE = {'low': 25, 'high': 28}  # For grammage <=0.77 and >0.77
-MAX_ROLL_WIDTH = 2200  # mm
-PIZZA_FLAP_EXTENSION = 20  # mm
-STANDARD_SLOT_SIZE = 3  # mm for nesting designs
+# ==================== CALCULATION FUNCTIONS ====================
+def calculate_standard_box(length, width, height, grammage, costing, selling, quantity, adjustment):
+    paper_length = (length + width) * 2 + 30
+    raw_width = width + height + 4
+    total_paper_length_m = round(paper_length / 1000, 3)
+    pieces_per_roll = math.floor(MAX_ROLL_WIDTH / raw_width)
+    total_used_width = raw_width * pieces_per_roll
+    trimmed_total_width = total_used_width + TRIM_ALLOWANCE
+    rounded_roll_width = math.ceil(trimmed_total_width / 50) * 50
+    effective_width_per_piece_m = round(rounded_roll_width / pieces_per_roll / 1000, 3)
 
-# ==================== DATA STRUCTURES ====================
-@dataclass
-class PriceResult:
-    cost_price: float
-    selling_price: float
-    total_price: float
-    dimensions: str
-    formula: str
-    production_metrics: dict
+    cost_price = total_paper_length_m * effective_width_per_piece_m * grammage * costing
+    base_unit_price = total_paper_length_m * effective_width_per_piece_m * grammage * selling
+    adjusted_unit_price = base_unit_price * (1 + adjustment / 100)
+    total_price = adjusted_unit_price * quantity
 
-@dataclass
-class DesignResult:
-    internal_dimensions: Tuple[float, float, float]
-    external_dimensions: Tuple[float, float, float]
-    nesting_long: Tuple[float, float]
-    nesting_short: Tuple[float, float]
-    layer_pad_thickness: float
+    formula = f"{total_paper_length_m} x {effective_width_per_piece_m} x {grammage} x {selling} x (1 + {adjustment / 100:.2f})"
 
-@dataclass
-class SampleBoardResult:
-    ups: int
-    boards_needed: int
-    cost_per_piece: float
-    final_price: float
+    return cost_price, adjusted_unit_price, total_price, formula
 
-# ==================== CORE CALCULATIONS ====================
-def calculate_pizza_box(length: float, width: float, grammage: float, 
-                       costing: float, selling: float, quantity: int, 
-                       adjustment: float) -> PriceResult:
-    """Precise pizza box calculation with 20mm flap extension"""
-    paper_length = length + PIZZA_FLAP_EXTENSION  # mm
-    paper_width = width + PIZZA_FLAP_EXTENSION    # mm
-    
-    # Roll optimization
+def calculate_pizza_box(length, width, grammage, costing, selling, quantity, adjustment):
+    paper_length = length + 20
+    paper_width = width + 20
     ups = math.floor(MAX_ROLL_WIDTH / paper_width)
-    if ups == 0:
-        raise ValueError("Box width exceeds maximum roll width (2200mm)")
-    
     total_used = paper_width * ups
-    roll_width = math.ceil((total_used + 28) / 50) * 50  # 28mm trimming allowance
-    actual_width = roll_width / ups  # mm
-    
-    # Convert to meters for pricing
+    roll_width = math.ceil((total_used + TRIM_ALLOWANCE) / 50) * 50
+    actual_width = roll_width / ups
+
     paper_length_m = paper_length / 1000
     actual_width_m = actual_width / 1000
-    
-    # Pricing calculation
+
     cost = paper_length_m * actual_width_m * grammage * costing
     price = paper_length_m * actual_width_m * grammage * selling * (1 + adjustment/100)
-    
-    return PriceResult(
-        cost_price=round(cost, 4),
-        selling_price=round(price, 4),
-        total_price=round(price * quantity, 2),
-        dimensions=f"{length}x{width}mm → {paper_length}x{paper_width}mm (paper)",
-        formula=f"({paper_length_m:.3f}m × {actual_width_m:.3f}m) × {grammage}g/m² × RM{selling} × {1+adjustment/100:.2f}",
-        production_metrics={
-            "Pieces/Roll": ups,
-            "Roll Width": f"{roll_width}mm",
-            "Actual Width": f"{actual_width:.2f}mm"
-        }
-    )
 
-def calculate_nesting_design(product_L: float, product_W: float, product_H: float,
-                           include_bubble: bool, thickness: float, allowance: float,
-                           qty_L: int, qty_W: int, layer_thick: float) -> DesignResult:
-    """Calculate nested packaging design with layer pads"""
-    # Adjust for bubble wrap
-    adj_L = product_L + 10 if include_bubble else product_L
-    adj_W = product_W + 10 if include_bubble else product_W
-    
-    # Internal dimensions
+    return cost, price, price * quantity, paper_length_m, actual_width_m, ups
+
+def calculate_layer_pad(length, width, grammage, costing, selling, quantity, adjustment):
+    return calculate_standard_box(length, width, 0, grammage, costing, selling, quantity, adjustment)
+
+def calculate_nesting(product_L, product_W, product_H, bubble, thickness, allowance, qty_L, qty_W, qty_H, layer_thick, layer_qty):
+    adj_L = product_L + 10 if bubble else product_L
+    adj_W = product_W + 10 if bubble else product_W
+    adj_H = product_H + 10 if bubble else product_H
+
     int_L = allowance + thickness + ((adj_L + thickness) * qty_L) + allowance
     int_W = allowance + thickness + ((adj_W + thickness) * qty_W) + allowance
-    int_H = product_H  # Height doesn't nest
-    
-    # External dimensions
-    ext_L = int_L + 10  # 10mm wall thickness
+    int_H = adj_H
+
+    ext_L = int_L + 10
     ext_W = int_W + 10
-    ext_H = int_H + 20 + layer_thick  # 20mm top/bottom + layer pad
-    
-    # Nesting pieces
-    nesting_long = (int_L, product_H)  # Length-wise nesting
-    nesting_short = (int_W, product_H)  # Width-wise nesting
-    
-    return DesignResult(
-        internal_dimensions=(int_L, int_W, int_H),
-        external_dimensions=(ext_L, ext_W, ext_H),
-        nesting_long=nesting_long,
-        nesting_short=nesting_short,
-        layer_pad_thickness=layer_thick
-    )
+    ext_H = int_H + 20 + (layer_thick * layer_qty)
 
-# ==================== UI COMPONENTS ====================
-def show_price_results(result: PriceResult):
-    """Standardized price results display"""
-    st.subheader("💰 Pricing Results")
-    cols = st.columns(3)
-    cols[0].metric("Cost/Unit", f"RM {result.cost_price:.4f}")
-    cols[1].metric("Price/Unit", f"RM {result.selling_price:.4f}")
-    cols[2].metric("Total Price", f"RM {result.total_price:.2f}")
-    
-    with st.expander("📊 Production Details"):
-        st.write(f"**Formula:** {result.formula}")
-        st.write(f"**Dimensions:** {result.dimensions}")
-        st.table(result.production_metrics)
+    nesting_long = (int_L, int_H)
+    nesting_short = (int_W, int_H)
 
-def show_design_results(result: DesignResult):
-    """Display nesting design results"""
-    st.subheader("📐 Design Specifications")
-    
-    col1, col2 = st.columns(2)
-    col1.metric("Internal Size", f"{result.internal_dimensions[0]:.1f} × {result.internal_dimensions[1]:.1f} × {result.internal_dimensions[2]:.1f} mm")
-    col2.metric("External Size", f"{result.external_dimensions[0]:.1f} × {result.external_dimensions[1]:.1f} × {result.external_dimensions[2]:.1f} mm")
-    
-    with st.expander("🧩 Nesting Components"):
-        st.write(f"**Long Nesting:** {result.nesting_long[0]:.1f} × {result.nesting_long[1]:.1f} mm")
-        st.write(f"**Short Nesting:** {result.nesting_short[0]:.1f} × {result.nesting_short[1]:.1f} mm")
-        st.write(f"**Layer Pad Thickness:** {result.layer_pad_thickness}mm")
+    return int_L, int_W, int_H, ext_L, ext_W, ext_H, nesting_long, nesting_short
 
-# ==================== CALCULATOR PAGES ====================
-def carton_box_ui():
-    st.header("📦 Carton Box Calculator")
-    with st.form("carton_box_form"):
-        col1, col2 = st.columns(2)
-        length = col1.number_input("Length (mm)", min_value=1.0, value=500.0)
-        width = col1.number_input("Width (mm)", min_value=1.0, value=300.0)
-        height = col1.number_input("Height (mm)", min_value=1.0, value=200.0)
-        
-        grammage = col2.number_input("Grammage (g/m²)", min_value=0.1, value=0.84)
-        costing = col2.number_input("Cost (RM/ton)", min_value=0.1, value=2.7)
-        selling = col2.number_input("Sell (RM/ton)", min_value=0.1, value=3.4)
-        quantity = col2.number_input("Quantity", min_value=1, value=100)
-        adjustment = col2.number_input("Adjustment %", value=0.0)
-        
-        if st.form_submit_button("Calculate"):
-            result = calculate_standard_box(length, width, height, grammage, costing, selling, quantity, adjustment)
-            show_price_results(result)
+def calculate_sample_board(length, width, ups, grammage, costing, selling, quantity, adjustment):
+    board_area = (length * width * ups) / 1000000
+    cost_price = board_area * grammage * costing
+    selling_price = board_area * grammage * selling * (1 + adjustment/100)
+    total_price = selling_price * quantity
+    return cost_price, selling_price, total_price
 
-def nesting_design_ui():
-    st.header("🧩 Nesting Design Calculator")
-    with st.form("nesting_form"):
-        st.subheader("Product Dimensions")
-        col1, col2 = st.columns(2)
-        product_L = col1.number_input("Length (mm)", min_value=1.0, value=800.0)
-        product_W = col1.number_input("Width (mm)", min_value=1.0, value=204.0)
-        product_H = col1.number_input("Height (mm)", min_value=1.0, value=10.0)
-        include_bubble = col1.checkbox("Include Bubble Wrap (+10mm)")
-        
-        st.subheader("Design Parameters")
-        thickness = col2.number_input("Nesting Thickness (mm)", min_value=0.1, value=3.0)
-        allowance = col2.number_input("Allowance (mm)", min_value=0.0, value=40.0)
-        qty_L = col2.number_input("Qty in Length", min_value=1, value=1)
-        qty_W = col2.number_input("Qty in Width", min_value=1, value=1)
-        layer_thick = col2.number_input("Layer Pad Thickness (mm)", min_value=0.0, value=3.0)
-        
-        if st.form_submit_button("Calculate"):
-            result = calculate_nesting_design(
-                product_L, product_W, product_H,
-                include_bubble, thickness, allowance,
-                qty_L, qty_W, layer_thick
-            )
-            show_design_results(result)
+def calculate_design_nesting_layer_pad(ext_L, ext_W, ext_H, layer_thick, layer_qty, product_L, product_W, product_H, bubble):
+    adj_L = product_L + 10 if bubble else product_L
+    adj_W = product_W + 10 if bubble else product_W
+    adj_H = product_H + 10 if bubble else product_H
 
-# ==================== MAIN APP ====================
-def main():
-    st.set_page_config(
-        page_title="Packaging Calculator Pro",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    
-    st.title("📦 Packaging Calculator Pro")
-    
-    # Sidebar navigation
-    with st.sidebar:
-        st.header("Calculation Types")
-        calc_type = st.radio(
-            "Select Calculator",
-            options=[ct.value for ct in CalculationType]
-        )
-    
-    # Router
-    if calc_type == CalculationType.CARTON_BOX.value:
-        carton_box_ui()
-    elif calc_type == CalculationType.PIZZA_BOX.value:
-        pizza_box_ui()
-    elif calc_type == CalculationType.LAYER_PAD.value:
-        layer_pad_ui()
-    elif calc_type == CalculationType.NESTING_DESIGN.value:
-        nesting_design_ui()
-    elif calc_type == CalculationType.SAMPLE_BOARD.value:
-        sample_board_ui()
-    elif calc_type == CalculationType.NESTING_LAYER_PAD.value:
-        nesting_layer_pad_ui()
+    int_L = ext_L - 10
+    int_W = ext_W - 10
+    int_H = ext_H - 20 - (layer_thick * layer_qty)
 
-if __name__ == "__main__":
-    main()
+    slot = 3
+    bal_L = (int_L - adj_L - 2 * slot) / 2
+    nesting_long_L = round(bal_L + slot + adj_L + slot + bal_L)
+
+    bal_W = (int_W - adj_W - 2 * slot) / 2
+    nesting_short_L = round(bal_W + slot + adj_W + slot + bal_W)
+
+    return int_L, int_W, int_H, adj_L, adj_W, adj_H, nesting_long_L, int_H, nesting_short_L, int_H
+
+# ==================== UI ====================
+st.set_page_config(page_title="Carton Quotation App", layout="wide")
+st.title("📦 Carton & Packaging Quotation Calculator")
+
+menu = st.sidebar.radio("Select Calculation Type", [
+    "Carton Box", "Pizza Box", "Layer Pad",
+    "Nesting Fitting and Carton Design",
+    "Using Sample Board", "Design Nesting and Layer Pad"
+])
+
+if menu == "Carton Box":
+    st.header("Carton Box Calculation")
+    L = st.number_input("Length (mm)", value=500.0)
+    W = st.number_input("Width (mm)", value=300.0)
+    H = st.number_input("Height (mm)", value=200.0)
+    G = st.number_input("Grammage (g/m²)", value=0.84)
+    C = st.number_input("Costing Tonnage", value=2.7)
+    S = st.number_input("Selling Tonnage", value=3.4)
+    Q = st.number_input("Quantity", value=100)
+    A = st.number_input("Adjustment %", value=0.0)
+
+    if st.button("Calculate Carton Box"):
+        cp, sp, tp, f = calculate_standard_box(L, W, H, G, C, S, Q, A)
+        st.write(f"Cost: RM {cp:.2f}, Price: RM {sp:.2f}, Total: RM {tp:.2f}")
+        st.write(f"Formula: {f}")
+
+elif menu == "Pizza Box":
+    st.header("Pizza Box Calculation")
+    L = st.number_input("Pizza Length (mm)", value=300.0)
+    W = st.number_input("Pizza Width (mm)", value=300.0)
+    G = st.number_input("Grammage (g/m²)", value=0.84)
+    C = st.number_input("Costing Tonnage", value=2.7)
+    S = st.number_input("Selling Tonnage", value=3.4)
+    Q = st.number_input("Quantity", value=100)
+    A = st.number_input("Adjustment %", value=0.0)
+
+    if st.button("Calculate Pizza Box"):
+        cp, sp, tp, pl, pw, ups = calculate_pizza_box(L, W, G, C, S, Q, A)
+        st.write(f"Cost: RM {cp:.2f}, Price: RM {sp:.2f}, Total: RM {tp:.2f}")
+        st.write(f"Paper Length: {pl:.3f}m, Actual Width: {pw:.3f}m, UPS: {ups}")
+
+elif menu == "Layer Pad":
+    st.header("Layer Pad Calculation")
+    L = st.number_input("Pad Length (mm)", value=500.0)
+    W = st.number_input("Pad Width (mm)", value=300.0)
+    G = st.number_input("Grammage (g/m²)", value=0.84)
+    C = st.number_input("Costing Tonnage", value=2.7)
+    S = st.number_input("Selling Tonnage", value=3.4)
+    Q = st.number_input("Quantity", value=100)
+    A = st.number_input("Adjustment %", value=0.0)
+
+    if st.button("Calculate Layer Pad"):
+        cp, sp, tp, f = calculate_layer_pad(L, W, G, C, S, Q, A)
+        st.write(f"Cost: RM {cp:.2f}, Price: RM {sp:.2f}, Total: RM {tp:.2f}")
+        st.write(f"Formula: {f}")
+
+elif menu == "Nesting Fitting and Carton Design":
+    st.header("Nesting Fitting and Carton Design")
+    PL = st.number_input("Product Length (mm)", value=800.0)
+    PW = st.number_input("Product Width (mm)", value=204.0)
+    PH = st.number_input("Product Height (mm)", value=10.0)
+    bubble = st.checkbox("Add Bubble Wrap (10mm)?", value=True)
+    thick = st.number_input("Nesting Thickness (mm)", value=3.0)
+    allow = st.number_input("Nesting Allowance (mm)", value=40.0)
+    qtyL = st.number_input("Qty in Length", value=1)
+    qtyW = st.number_input("Qty in Width", value=1)
+    qtyH = st.number_input("Qty in Height", value=10)
+    layerT = st.number_input("Layer Pad Thickness (mm)", value=3.0)
+    layerQty = st.number_input("Number of Layer Pads", value=2)
+
+    if st.button("Calculate Nesting"):
+        iL, iW, iH, eL, eW, eH, nL, nS = calculate_nesting(PL, PW, PH, bubble, thick, allow, qtyL, qtyW, qtyH, layerT, layerQty)
+        st.write(f"Internal: {iL:.1f} x {iW:.1f} x {iH:.1f}")
+        st.write(f"External: {eL:.1f} x {eW:.1f} x {eH:.1f}")
+        st.write(f"Nesting Long: {nL[0]:.1f} x {nL[1]:.1f} mm")
+        st.write(f"Nesting Short: {nS[0]:.1f} x {nS[1]:.1f} mm")
+
+elif menu == "Using Sample Board":
+    st.header("Sample Board Calculation")
+    L = st.number_input("Board Length (mm)", value=500.0)
+    W = st.number_input("Board Width (mm)", value=300.0)
+    UPS = st.number_input("UPS", value=4)
+    G = st.number_input("Grammage (g/m²)", value=0.84)
+    C = st.number_input("Costing Tonnage", value=2.7)
+    S = st.number_input("Selling Tonnage", value=3.4)
+    Q = st.number_input("Quantity", value=100)
+    A = st.number_input("Adjustment %", value=0.0)
+
+    if st.button("Calculate Sample Board"):
+        cp, sp, tp = calculate_sample_board(L, W, UPS, G, C, S, Q, A)
+        st.write(f"Cost: RM {cp:.2f}, Price: RM {sp:.2f}, Total: RM {tp:.2f}")
+
+elif menu == "Design Nesting and Layer Pad":
+    st.header("Design Nesting and Layer Pad")
+    extL = st.number_input("External Length (mm)", value=600.0)
+    extW = st.number_input("External Width (mm)", value=500.0)
+    extH = st.number_input("External Height (mm)", value=215.0)
+    layerT = st.number_input("Layer Pad Thickness (mm)", value=3.0)
+    layerQ = st.number_input("Number of Layer Pads", value=3)
+    prodL = st.number_input("Product Length (mm)", value=800.0)
+    prodW = st.number_input("Product Width (mm)", value=204.0)
+    prodH = st.number_input("Product Height (mm)", value=10.0)
+    bubble = st.checkbox("Add Bubble Wrap (10mm)?", value=False)
+
+    if st.button("Calculate Design Nesting"):
+        iL, iW, iH, aL, aW, aH, nLL, nLW, nSL, nSW = calculate_design_nesting_layer_pad(extL, extW, extH, layerT, layerQ, prodL, prodW, prodH, bubble)
+        st.write(f"Internal Size: {iL} x {iW} x {iH}")
+        st.write(f"Adjusted Product: {aL} x {aW} x {aH}")
+        st.write(f"Nesting Long: {nLL} x {nLW} mm")
+        st.write(f"Nesting Short: {nSL} x {nSW} mm")
